@@ -1,0 +1,4 @@
+# ninja log v7
+1	7957	1767861647044747685	/home/ysc/3d-gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/simple_knn.o	dad2540ec52aa0bf
+0	12641	1767861647044747685	/home/ysc/3d-gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/ext.o	46c8d330ae53fb04
+1	34580	1767861647044747685	/home/ysc/3d-gaussian-splatting/submodules/simple-knn/build/temp.linux-x86_64-cpython-39/spatial.o	6c55e8bd29356bc3
