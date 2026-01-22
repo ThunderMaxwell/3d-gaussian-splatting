@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, l1_loss_mask,l2_loss,depth_loss_l1
+from utils.loss_utils import l1_loss, ssim, l1_loss_mask,l2_loss,depth_loss_l1,pyramid_ssim_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -31,6 +31,7 @@ except ImportError:
 
 try:
     from fused_ssim import fused_ssim
+    print("yes")
     FUSED_SSIM_AVAILABLE = True
 except:
     FUSED_SSIM_AVAILABLE = False
@@ -109,11 +110,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             torch.cuda.empty_cache() # 清理碎片
             torch.cuda.reset_peak_memory_stats() # 重置峰值统计
             
-            # 记录初始状态
+
             alloc = torch.cuda.memory_allocated() / 1024**2
+            reserved = torch.cuda.memory_reserved() / 1024**2  # 这才是接近 nvidia-smi 的值
+            peak = torch.cuda.max_memory_allocated() / 1024**2
+
             with open(mem_log_path, "a") as f:
+                # 建议格式化输出包含 reserved
                 f.write(f"\n[Iter {iteration}] Start Cycle\n")
-                f.write(f"{iteration:<9} | {'Start':<10} | {alloc:.2f}\n")
+                f.write(f"{iteration:<9} | {'Stage':<10} | Alloc: {alloc:.2f} | Rsrv: {reserved:.2f} | Peak: {peak:.2f}\n")
         ################################################
         gaussians.update_learning_rate(iteration)
 
@@ -139,9 +144,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         ## added by mwx
         if check_mem:
             alloc = torch.cuda.memory_allocated() / 1024**2
+            reserved = torch.cuda.memory_reserved() / 1024**2  # 这才是接近 nvidia-smi 的值
             peak = torch.cuda.max_memory_allocated() / 1024**2
+
             with open(mem_log_path, "a") as f:
-                f.write(f"{iteration:<9} | {'Render':<10} | {alloc:.2f} | {peak:.2f}\n")
+                # 建议格式化输出包含 reserved
+                f.write(f"{iteration:<9} | {'Stage':<10} | Alloc: {alloc:.2f} | Rsrv: {reserved:.2f} | Peak: {peak:.2f}\n")
         ################################################
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         # added by mwx 2026/01/16
@@ -150,10 +158,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         hard_mask = torch.ones_like(image)
 
         # 2. 根据 Colmap ID 填 0 (你的自定义区域)
-        if viewpoint_cam.colmap_id==1:
-            hard_mask[:, 780:, 510:1150] = 0
-        elif viewpoint_cam.colmap_id==3:
-            hard_mask[:, 940:, 720:905] = 0
+        # if viewpoint_cam.colmap_id==1:
+        #     hard_mask[:, 780:, 510:1150] = 0
+        # elif viewpoint_cam.colmap_id==3:
+        #     hard_mask[:, 940:, 720:905] = 0
+        if viewpoint_cam.colmap_id == 1:
+            # 原来: [:, 780:, 510:1150]
+            # 现在: [:, 1560:, 1020:2300]
+            hard_mask[:, 1560:, 1020:2300] = 0
+            
+        elif viewpoint_cam.colmap_id == 3:
+            # 原来: [:, 940:, 720:905]
+            # 现在: [:, 1880:, 1440:1810]
+            hard_mask[:, 1880:, 1440:1810] = 0
 
         # ===============================================
 
@@ -168,11 +185,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Ll1 = l1_loss_mask(image, gt_image,hard_mask)
         Ll1 = l2_loss(image,gt_image,hard_mask)
+        pyramid_weights = [1.0, 1.0, 1.0]
         # if FUSED_SSIM_AVAILABLE:
-        #     ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
+        #     mask_input = hard_mask.unsqueeze(0) if hard_mask is not None else None
+        #     ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0),mask=mask_input)
+        #     # ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         # else:
         #     ssim_value = ssim(image, gt_image)
-        ssim_value = ssim(image, gt_image,hard_mask)
+        # ssim_value = ssim(image, gt_image,hard_mask)
+
+        # modified by mwx 2026.01.20
+        loss_pyramid_ssim = pyramid_ssim_loss(image, gt_image, hard_mask, levels=3, weight_list=pyramid_weights)
+
         # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
 
         # ===============================================
@@ -210,7 +234,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # 现在 Render 和 GT 都是正深度，直接求 Loss
         depth_loss = depth_loss_l1(pre_depth=surf_inv_depth,gtdepth=gt_metric_depth)
         # depth_loss_l1(surf_inv_depth, gt_metric_safe,final_depth_mask)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value) + depth_loss
+        # loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value) + depth_loss
+        # modified by mwx 2026.01.20
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * loss_pyramid_ssim + depth_loss
+
         # depth_loss = depth_loss.item()
         # added by mwx
         if check_mem:
@@ -223,9 +250,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # added by mwx
         if check_mem:
             alloc = torch.cuda.memory_allocated() / 1024**2
+            reserved = torch.cuda.memory_reserved() / 1024**2  # 这才是接近 nvidia-smi 的值
             peak = torch.cuda.max_memory_allocated() / 1024**2
+
             with open(mem_log_path, "a") as f:
-                f.write(f"{iteration:<9} | {'Backward':<10} | {alloc:.2f} | {peak:.2f}\n")
+                # 建议格式化输出包含 reserved
+                f.write(f"{iteration:<9} | {'Stage':<10} | Alloc: {alloc:.2f} | Rsrv: {reserved:.2f} | Peak: {peak:.2f}\n")
         ################################################
         iter_end.record()
 
@@ -286,8 +316,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.optimizer.zero_grad(set_to_none = True)
                 if check_mem:
                     alloc = torch.cuda.memory_allocated() / 1024**2
+                    reserved = torch.cuda.memory_reserved() / 1024**2  # 这才是接近 nvidia-smi 的值
+                    peak = torch.cuda.max_memory_allocated() / 1024**2
                     with open(mem_log_path, "a") as f:
-                        f.write(f"{iteration:<9} | {'Optimizer':<10} | {alloc:.2f}\n")
+                        # 建议格式化输出包含 reserved
+                        f.write(f"{iteration:<9} | {'Stage':<10} | Alloc: {alloc:.2f} | Rsrv: {reserved:.2f} | Peak: {peak:.2f}\n")
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")

@@ -139,3 +139,53 @@ def depth_loss_l1(pre_depth,gtdepth):
     mask1 = gtdepth>0
     #在大高斯处增加loss，弱纹理处也会产生稠密点云，使用稠密点云生成的深度图一定程度将原始分辨率的点云带入，降低低分辨率点云的影响
     return (torch.abs((pre_depth-gtdepth)[mask1])).mean()
+
+# added by mwx #################################
+# ssim 加权金字塔
+import torch.nn.functional as F
+
+def pyramid_ssim_loss(img, gt, mask, levels=3, weight_list=None):
+    """
+    计算金字塔 SSIM Loss
+    Args:
+        img: 渲染图像 (B, C, H, W)
+        gt: 真值图像 (B, C, H, W)
+        mask: 掩膜 (B, 1, H, W)
+        levels: 金字塔层数 (默认3层: 原图, 1/2, 1/4)
+        weight_list: 每层的权重列表
+    Returns:
+        total_loss: 加权后的 SSIM Loss
+    """
+    if weight_list is None:
+        # 默认权重：越底层的分辨率（大结构）权重稍微大一点，或者平均
+        # 也可以参考 MS-SSIM 的经典权重，这里简单起见设为平均或递减
+        # 例如: [1.0, 1.0, 1.0] 表示每层都同等重要
+        weight_list = [1.0] * levels
+    
+    total_loss = 0.0
+    total_weight = 0.0
+    
+    current_img = img
+    current_gt = gt
+    current_mask = mask
+    
+    for i in range(levels):
+        # 1. 计算当前层的 SSIM Loss (1 - SSIM)
+        ssim_val = ssim(current_img, current_gt, current_mask)
+        loss_level = 1.0 - ssim_val
+        
+        total_loss += loss_level * weight_list[i]
+        total_weight += weight_list[i]
+        
+        # 2. 如果不是最后一层，进行下采样
+        if i < levels - 1:
+            # 使用平均池化进行下采样 (抗锯齿效果比最近邻好)
+            current_img = F.avg_pool2d(current_img, kernel_size=2, stride=2)
+            current_gt = F.avg_pool2d(current_gt, kernel_size=2, stride=2)
+            
+            # Mask 下采样后需要重新二值化 (保持 Hard Mask)
+            # 或者将其视为 Soft Mask (权重)，推荐二值化以保持逻辑一致
+            current_mask = F.avg_pool2d(current_mask.float(), kernel_size=2, stride=2)
+            current_mask = (current_mask > 0.5).float() # 阈值化
+            
+    return total_loss / total_weight
