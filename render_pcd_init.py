@@ -1,5 +1,4 @@
 # [优化版] 增加了去噪、体素下采样、以及“高斯球尺度强行对齐”功能
-
 import torch
 import os
 import sys
@@ -15,7 +14,8 @@ from gaussian_renderer import render
 from arguments import PipelineParams
 from scipy.interpolate import CubicSpline
 
-# ================= 辅助类 (保持不变) =================
+from scipy.interpolate import CubicSpline, Akima1DInterpolator, PchipInterpolator
+# ================= 辅助类 =================
 class DummyInfo:
     def __init__(self, name):
         self.image_name = name
@@ -41,7 +41,7 @@ class MiniCam:
         self.znear = znear
         self.image_name = name
 
-# ================= 数学辅助函数 (保持不变) =================
+# ================= 数学辅助函数 ===================
 def getProjectionMatrix(znear, zfar, fovX, fovY):
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))
@@ -76,7 +76,7 @@ def look_at(eye, center, up):
     mat[:3, 2] = z_axis
     mat[:3, 3] = eye
     return mat
-
+# 三次样条插值 目的是使整条轨迹平滑 导致渲染有甩尾
 # def get_custom_path(points, num_frames=120):
 #     MY_POINTS = [
 #         [-0.5111,16.2380,0],
@@ -127,11 +127,9 @@ def look_at(eye, center, up):
 #         cams.append(c2w)
 #     return cams
 #
-# 头部引入库时，增加 Akima1DInterpolator
-from scipy.interpolate import CubicSpline, Akima1DInterpolator, PchipInterpolator
 
 def get_custom_path(points, num_frames=120):
-    # 你的自定义关键点
+    # 自定义关键点
     MY_POINTS = [
         [6.819603,35.267548,0],
         [2.029363,24.265266,0],
@@ -167,12 +165,12 @@ def get_custom_path(points, num_frames=120):
         [6.389007,63.828831,0],
     ]
     waypoints = np.array(MY_POINTS)
-    # --- [自动去重逻辑] ---
+    # --- [自动去重] ---
     # 计算相邻点距离，只保留距离 > 0 的点
     diffs = np.linalg.norm(np.diff(waypoints[:, :2], axis=0), axis=1)
     valid_mask = np.r_[True, diffs > 1e-6] 
     
-    # 打印去重信息，让你知道删了几个点
+    # 打印去重信息
     if np.sum(valid_mask) < len(waypoints):
         print(f"[Warning] Detected {len(waypoints) - np.sum(valid_mask)} duplicate points. Removing them automatically.")
         
@@ -184,6 +182,7 @@ def get_custom_path(points, num_frames=120):
     center = (min_bound + max_bound) / 2 
     total_height = max_bound[2] - min_bound[2]
     fixed_z = max_bound[2] - total_height * 0.3
+    # fixed_z 相机高度,园区场景有翻转，需根据场景自定义
     # fixed_z = center[2] 
     
     x = waypoints[:, 0]
@@ -227,7 +226,7 @@ def get_custom_path(points, num_frames=120):
         cams.append(c2w)
         
     return cams
-# ================= 主逻辑修改 =================
+
 def main(args):
     # 1. 读取 PCD
     print(f"[{time.strftime('%H:%M:%S')}] Loading PCD from {args.input}...")
@@ -239,14 +238,14 @@ def main(args):
     original_count = len(pcd.points)
     print(f"[Info] Original Point Count: {original_count}")
 
-    # --- [新增] 去噪处理 (提升清晰度) ---
+    # ---  去噪处理  ---
     # 在下采样之前，先去除离群噪点，防止这些噪点变成大的模糊团块
     print(f"[{time.strftime('%H:%M:%S')}] Removing outliers to improve clarity...")
     # nb_neighbors: 考虑多少个邻居, std_ratio: 标准差倍数，越小越严格
     pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
     print(f"[Info] Points after outlier removal: {len(pcd.points)}")
 
-    # --- [优化] 体素下采样 (减少内存) ---
+    # --- 体素下采样 (减少内存) ---
     if args.voxel_size > 0:
         print(f"[{time.strftime('%H:%M:%S')}] Downsampling with voxel_size={args.voxel_size}...")
         pcd = pcd.voxel_down_sample(voxel_size=args.voxel_size)
@@ -274,12 +273,11 @@ def main(args):
     pcd_wrapper = BasicPointCloud(points=pts, colors=clrs, normals=None)
     dummy_infos = [DummyInfo("init_view")]
     
-    # 标准初始化 (会根据点间距计算 scale)
+    # 标准初始化 (根据点间距计算 scale)
     gaussians.create_from_pcd(pcd_wrapper, dummy_infos, spatial_lr_scale=1.0)
     
-    # --- [核心修改] 根据体素大小强制对齐高斯球尺度 ---
-    # 这就是你想要的 "根据高斯球大小排列在一起" 的逻辑实现。
-    # 既然我们用了体素下采样，我们知道点之间的距离大约是 voxel_size。
+    # ---  根据体素大小强制对齐高斯球尺度 ---
+    # 点之间的距离大约是 voxel_size。
     # 强制将高斯球大小设为 voxel_size 的一定比例，可以保证它们完美平铺，没有空洞，也最省内存。
     if args.voxel_size > 0:
         print(f"[{time.strftime('%H:%M:%S')}] Overriding Gaussian scales to match voxel size (Tiling)...")
