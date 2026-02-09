@@ -55,14 +55,10 @@ User [camenduru](https://github.com/camenduru) was kind enough to provide a Cola
 ## Cloning the Repository
 
 The repository contains submodules, thus please check it out with 
-```shell
-# SSH
-git clone git@github.com:graphdeco-inria/gaussian-splatting.git --recursive
-```
-or
+
 ```shell
 # HTTPS
-git clone https://github.com/graphdeco-inria/gaussian-splatting --recursive
+git clone https://github.com/CNITECH-CV-LAB/gaussian-splatting-LiDAR.git --recursive
 ```
 
 ## Overview
