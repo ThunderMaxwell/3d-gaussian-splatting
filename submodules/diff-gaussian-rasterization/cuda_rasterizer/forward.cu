@@ -395,7 +395,8 @@ renderCUDA(
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
 		if (invdepth)
-		invdepth[pix_id] = expected_invdepth;// 1. / (expected_depth + T * 1e3);
+			invdepth[pix_id] = expected_invdepth;// 1. / (expected_depth + T * 1e3);
+			// invdepth[pix_id] = expected_invdepth/ fmaxf(1.0f - T, 1e-6f);
 	}
 }
 

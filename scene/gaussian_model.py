@@ -59,6 +59,9 @@ class GaussianModel:
         self._opacity = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
+        ## modified by mwx 2026.03.02
+        self.xyz_gradient_accum_abs = torch.empty(0)
+		#############################
         self.denom = torch.empty(0)
         self.optimizer = None
         self.percent_dense = 0
@@ -76,28 +79,53 @@ class GaussianModel:
             self._opacity,
             self.max_radii2D,
             self.xyz_gradient_accum,
+			## modified by mwx 2026.03.02
+            self.xyz_gradient_accum_abs,  
+			#############################
             self.denom,
             self.optimizer.state_dict(),
             self.spatial_lr_scale,
         )
     
     def restore(self, model_args, training_args):
-        (self.active_sh_degree, 
-        self._xyz, 
-        self._features_dc, 
-        self._features_rest,
-        self._scaling, 
-        self._rotation, 
-        self._opacity,
-        self.max_radii2D, 
-        xyz_gradient_accum, 
-        denom,
-        opt_dict, 
-        self.spatial_lr_scale) = model_args
+		## modified by mwx 2026.03.02
+        if len(model_args) == 12:
+            (self.active_sh_degree, 
+            self._xyz, 
+            self._features_dc, 
+            self._features_rest,
+            self._scaling, 
+            self._rotation, 
+            self._opacity,
+            self.max_radii2D, 
+            xyz_gradient_accum, 
+            denom,
+            opt_dict, 
+            self.spatial_lr_scale) = model_args
+            xyz_gradient_accum_abs = None
+        else:
+            (self.active_sh_degree, 
+            self._xyz, 
+            self._features_dc, 
+            self._features_rest,
+            self._scaling, 
+            self._rotation, 
+            self._opacity,
+            self.max_radii2D, 
+            xyz_gradient_accum, 
+            xyz_gradient_accum_abs,
+            denom,
+            opt_dict, 
+            self.spatial_lr_scale) = model_args
+		#############################
         self.training_setup(training_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
+		## modified by mwx 2026.03.02
+        if xyz_gradient_accum_abs is not None:
+            self.xyz_gradient_accum_abs = xyz_gradient_accum_abs
+		#############################
 
     @property
     def get_scaling(self):
@@ -178,6 +206,9 @@ class GaussianModel:
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        ## modified by mwx 2026.03.02
+        self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+		#############################
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
@@ -358,11 +389,23 @@ class GaussianModel:
         self._rotation = optimizable_tensors["rotation"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
-
+		## modified by mwx 2026.03.02
+        self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
+		#############################
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
-        self.tmp_radii = self.tmp_radii[valid_points_mask]
-
+		## modified by mwx 2026.03.02
+        # self.tmp_radii = self.tmp_radii[valid_points_mask]
+        # if self.tmp_radii is not None:
+        #     self.tmp_radii = self.tmp_radii[valid_points_mask]
+        # tmp_radii is a transient per-point buffer; it can become out-of-sync during densify/split.
+        # Never let it crash pruning.
+		
+        if self.tmp_radii is not None and self.tmp_radii.shape[0] == valid_points_mask.shape[0]:
+            self.tmp_radii = self.tmp_radii[valid_points_mask]
+        else:
+            self.tmp_radii = None
+		#############################
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -403,6 +446,9 @@ class GaussianModel:
 
         self.tmp_radii = torch.cat((self.tmp_radii, new_tmp_radii))
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+		## modified by mwx 2026.03.02
+        self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+		#############################
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
@@ -449,14 +495,23 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
+    # def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
+	## modified by mwx 2026.03.02
+    def densify_and_prune(self, max_grad, max_grad_abs, min_opacity, extent, max_screen_size, radii):
+	#############################
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
+		## modified by mwx 2026.03.02
+        grads_abs = self.xyz_gradient_accum_abs / self.denom
+        grads_abs[grads_abs.isnan()] = 0.0
+        # grads = self.xyz_gradient_accum / self.denom
+        # grads[grads.isnan()] = 0.0
 
         self.tmp_radii = radii
         self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
-
+        # self.densify_and_split(grads, max_grad, extent)
+        self.densify_and_split(grads_abs, max_grad_abs, extent)
+		#############################
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
@@ -467,7 +522,12 @@ class GaussianModel:
         self.tmp_radii = None
 
         torch.cuda.empty_cache()
-
+		## modified by mwx 2026.03.02
+        assert self.get_xyz.shape[0] == self.xyz_gradient_accum.shape[0] == self.xyz_gradient_accum_abs.shape[0] == self.denom.shape[0] == self.max_radii2D.shape[0]
+		#############################
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
-        self.denom[update_filter] += 1
+        ## modified by mwx 2026.03.02
+        self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, 2:], dim=-1, keepdim=True)
+        #############################
+		self.denom[update_filter] += 1

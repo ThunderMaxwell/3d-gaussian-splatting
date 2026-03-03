@@ -408,7 +408,7 @@ __global__ void preprocessCUDA(
 	const float scale_modifier,
 	const float* proj,
 	const glm::vec3* campos,
-	const float3* dL_dmean2D,
+	const float4* dL_dmean2D,
 	glm::vec3* dL_dmeans,
 	float* dL_dcolor,
 	float* dL_dcov3D,
@@ -465,7 +465,7 @@ renderCUDA(
 	const uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ dL_dpixels,
 	const float* __restrict__ dL_invdepths,
-	float3* __restrict__ dL_dmean2D,
+	float4* __restrict__ dL_dmean2D,
 	float4* __restrict__ dL_dconic2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
@@ -629,6 +629,8 @@ renderCUDA(
 			// Update gradients w.r.t. 2D mean position of the Gaussian
 			atomicAdd(&dL_dmean2D[global_id].x, dL_dG * dG_ddelx * ddelx_dx);
 			atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely * ddely_dy);
+			atomicAdd(&dL_dmean2D[global_id].z, fabs(dL_dG * dG_ddelx * ddelx_dx));
+			atomicAdd(&dL_dmean2D[global_id].w, fabs(dL_dG * dG_ddely * ddely_dy));
 
 			// Update gradients w.r.t. 2D covariance (2x2 matrix, symmetric)
 			atomicAdd(&dL_dconic2D[global_id].x, -0.5f * gdx * d.x * dL_dG);
@@ -657,7 +659,7 @@ void BACKWARD::preprocess(
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	const glm::vec3* campos,
-	const float3* dL_dmean2D,
+	const float4* dL_dmean2D,
 	const float* dL_dconic,
 	const float* dL_dinvdepth,
 	float* dL_dopacity,
@@ -705,7 +707,7 @@ void BACKWARD::preprocess(
 		scale_modifier,
 		projmatrix,
 		campos,
-		(float3*)dL_dmean2D,
+		(float4*)dL_dmean2D,
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
@@ -729,7 +731,7 @@ void BACKWARD::render(
 	const uint32_t* n_contrib,
 	const float* dL_dpixels,
 	const float* dL_invdepths,
-	float3* dL_dmean2D,
+	float4* dL_dmean2D,
 	float4* dL_dconic2D,
 	float* dL_dopacity,
 	float* dL_dcolors,

@@ -4,7 +4,7 @@ import os
 import torch
 from random import randint
 # [Modified] 引入必要的损失函数
-from utils.loss_utils import l2_loss, ssim, depth_loss_l1, pyramid_ssim_loss, l1_loss_with_mask, l1_loss
+from utils.loss_utils import  depth_loss_l1, pyramid_ssim_loss,l1_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -140,8 +140,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # 2. RGB Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-
+        pyramid_weights = [1.0, 1.0, 1.0]
+        loss_pyramid_ssim = pyramid_ssim_loss(image, gt_image, levels=3, weight_list=pyramid_weights)
+        # loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * loss_pyramid_ssim
         # 3. 2D 深度损失 (辅助) - 只使用图像下半部1/3的深度
         loss_depth = torch.tensor(0.0).cuda()
         gt_depth_raw = depth_memory_cache.get(viewpoint_cam.image_name)
@@ -194,7 +196,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         total_loss = loss_rgb + depths_loss 
         total_loss.backward()
-
+        if iteration == first_iter:
+            g = viewspace_point_tensor.grad
+            print("viewspace_points:", tuple(viewspace_point_tensor.shape),
+                "grad:", None if g is None else tuple(g.shape),
+                "absgrad_sum:", 0.0 if g is None else float(g[:, 2:].abs().sum().item()))                                              
         iter_end.record()
 
         # 6. 统计与稠密化 (完整补全)
@@ -213,19 +219,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in saving_iterations):
                 scene.save(iteration)
 
-            # 稠密化与修建 (3DGS 核心逻辑)
-            if iteration < opt.densify_until_iter:
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
-
-                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
-
-            # 优化器步进
             if iteration < opt.iterations:
                 gaussians.exposure_optimizer.step()
                 gaussians.exposure_optimizer.zero_grad(set_to_none = True)
@@ -239,6 +232,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             if (iteration in checkpoint_iterations):
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+            # 稠密化与修建 (3DGS 核心逻辑)
+            if iteration < opt.densify_until_iter:
+                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+
+                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, opt.densify_grad_abs_threshold,0.005, scene.cameras_extent, size_threshold, radii)
+                    print("N xyz:", gaussians.get_xyz.shape[0],
+                            "acc:", gaussians.xyz_gradient_accum.shape[0],
+                            "acc_abs:", gaussians.xyz_gradient_accum_abs.shape[0],
+                            "denom:", gaussians.denom.shape[0],
+                            "max_r2d:", gaussians.max_radii2D.shape[0])
+
+                # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                #     gaussians.reset_opacity()
+
+            # 优化器步进
+
 
 
 def prepare_output_and_logger(args):    
@@ -320,7 +333,7 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[2_000, 7_000, 15_000,20_000,30_000,50_000,65_000,90_000,100_000,120_000,140_000,150_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[2_000, 7_000, 15_000,20_000,30_000,40_000,50_000,60_000,70_000,75_000,90_000,100_000,120_000,140_000,150_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 100_000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument('--disable_viewer', action='store_true', default=False)

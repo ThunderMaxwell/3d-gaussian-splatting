@@ -396,6 +396,8 @@ void CudaRasterizer::Rasterizer::backward(
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
 	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+	float4* dL_dmean2D4 = reinterpret_cast<float4*>(dL_dmean2D);
+	const float4* dL_dmean2D4_const = reinterpret_cast<const float4*>(dL_dmean2D);
 	CHECK_CUDA(BACKWARD::render(
 		tile_grid,
 		block,
@@ -411,7 +413,7 @@ void CudaRasterizer::Rasterizer::backward(
 		imgState.n_contrib,
 		dL_dpix,
 		dL_invdepths,
-		(float3*)dL_dmean2D,
+		(float4*)dL_dmean2D,
 		(float4*)dL_dconic,
 		dL_dopacity,
 		dL_dcolor,
@@ -436,7 +438,7 @@ void CudaRasterizer::Rasterizer::backward(
 		focal_x, focal_y,
 		tan_fovx, tan_fovy,
 		(glm::vec3*)campos,
-		(float3*)dL_dmean2D,
+		(float4*)dL_dmean2D,
 		dL_dconic,
 		dL_dinvdepth,
 		dL_dopacity,
