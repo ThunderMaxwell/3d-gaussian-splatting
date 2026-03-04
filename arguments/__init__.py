@@ -91,13 +91,30 @@ class OptimizationParams(ParamGroup):
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
+        self.densify_until_iter = 20_000
         self.densify_grad_threshold = 0.0002
+        self.densify_grad_abs_threshold = 0.0004 #abs 梯度
         self.depth_l1_weight_init = 1.0
         self.depth_l1_weight_final = 0.01
         self.random_background = False
         self.optimizer_type = "default"
         super().__init__(parser, "Optimization Parameters")
+
+class QuickParams(ParamGroup):
+    def __init__(self, parser):
+        self.quick = False
+        self.quick_max_iter = 30000
+        self.roi_center = ""  # Format: "x,y,z"
+        self.roi_radius = 30.0
+        self.roi_padding = 5.0
+        self.cam_bbox_size = 40.0  # 立方体边长（或球体半径，由 shape_type 决定）
+        self.shape_type = "bbox"    # "bbox" (立方体) 或 "sphere" (球体)
+        self.quick_cams = 100
+        self.eval_views = 5
+        self.eval_seed = 0
+        self.quick_outdir = "output/quick/"
+        self.quick_eval_interval = 3000
+        super().__init__(parser, "Quick Mode Parameters")
 
 def get_combined_args(parser : ArgumentParser):
     cmdlne_string = sys.argv[1:]
