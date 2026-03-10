@@ -23,7 +23,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     """
  
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    # screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+    screenspace_points = torch.zeros((pc.get_xyz.shape[0], 4),
+                                 dtype=pc.get_xyz.dtype,
+                                 requires_grad=True,
+                                 device="cuda") + 0
     try:
         screenspace_points.retain_grad()
     except:
@@ -87,27 +91,32 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         colors_precomp = override_color
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
+    # modified by mwx 2026-03-06: add pixels to returned values
     if separate_sh:
-        rendered_image, radii, depth_image = rasterizer(
-            means3D = means3D,
-            means2D = means2D,
-            dc = dc,
-            shs = shs,
-            colors_precomp = colors_precomp,
-            opacities = opacity,
-            scales = scales,
-            rotations = rotations,
-            cov3D_precomp = cov3D_precomp)
+        rendered_image, radii, depth_image, pixels = rasterizer(
+            means3D=means3D,
+            means2D=means2D,
+            dc=dc,
+            shs=shs,
+            colors_precomp=colors_precomp,
+            opacities=opacity,
+            scales=scales,
+            rotations=rotations,
+            cov3D_precomp=cov3D_precomp
+        )
     else:
-        rendered_image, radii, depth_image = rasterizer(
-            means3D = means3D,
-            means2D = means2D,
-            shs = shs,
-            colors_precomp = colors_precomp,
-            opacities = opacity,
-            scales = scales,
-            rotations = rotations,
-            cov3D_precomp = cov3D_precomp)
+        rendered_image, radii, depth_image, pixels = rasterizer(
+            means3D=means3D,
+            means2D=means2D,
+            shs=shs,
+            colors_precomp=colors_precomp,
+            opacities=opacity,
+            scales=scales,
+            rotations=rotations,
+            cov3D_precomp=cov3D_precomp
+        )
+    ################################
+
         
     # Apply exposure to rendered image (training only)
     if use_trained_exp:
@@ -117,12 +126,22 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     rendered_image = rendered_image.clamp(0, 1)
+    # out = {
+    #     "render": rendered_image,
+    #     "viewspace_points": screenspace_points,
+    #     "visibility_filter" : (radii > 0).nonzero(),
+    #     "radii": radii,
+    #     "depth" : depth_image
+    #     }
+    # modified by mwx 2026-03-06: add pixels to output
     out = {
-        "render": rendered_image,
+        "render": rendered_image.clamp(0, 1),
         "viewspace_points": screenspace_points,
-        "visibility_filter" : (radii > 0).nonzero(),
+        "visibility_filter": (radii > 0),
         "radii": radii,
-        "depth" : depth_image
-        }
+        "depth": depth_image,
+        "pixels": pixels,   # new
+    }
+    ######################################
     
     return out

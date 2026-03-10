@@ -50,6 +50,9 @@ namespace CudaRasterizer
 			const bool prefiltered,
 			float* out_color,
 			float* depth,
+			// modified by mwx 2026-03-06
+			float* pixels, 
+			/////////////////////////////
 			bool antialiasing,
 			int* radii = nullptr,
 			bool debug = false);

@@ -171,6 +171,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float* cov3Ds,
 	float* rgb,
 	float4* conic_opacity,
+	// modified by mwx 2026-03-06
+	float* pixels,
+	//////////////////////////////
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	bool prefiltered,
@@ -184,7 +187,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// this Gaussian will not be processed further.
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
-
+	// added by mwx 2026-03-06
+	pixels[idx] = 0.0f;
+	//////////////////////////
 	// Perform near culling, quit if outside.
 	float3 p_view;
 	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
@@ -285,7 +290,8 @@ renderCUDA(
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	const float* __restrict__ depths,
-	float* __restrict__ invdepth)
+	float* __restrict__ invdepth,
+	float* __restrict__ pixels )
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -366,7 +372,9 @@ renderCUDA(
 				done = true;
 				continue;
 			}
-
+			// modified by mwx 2026-03-06
+			atomicAdd(&pixels[collected_id[j]], 1.0f); 
+			/////////////////////////////
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
@@ -413,7 +421,11 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color,
 	float* depths,
-	float* depth)
+	float* depth,
+	// modified by mwx 2026-03-06
+	float* pixels 
+	//////////////////////////////
+	)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -427,7 +439,9 @@ void FORWARD::render(
 		bg_color,
 		out_color,
 		depths, 
-		depth);
+		depth,
+		pixels
+		);
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -452,6 +466,9 @@ void FORWARD::preprocess(int P, int D, int M,
 	float* cov3Ds,
 	float* rgb,
 	float4* conic_opacity,
+	// modified by mwx 2026-03-06
+	float* pixels,
+	//////////////////////////////
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	bool prefiltered,
@@ -480,6 +497,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		cov3Ds,
 		rgb,
 		conic_opacity,
+		pixels,
 		grid,
 		tiles_touched,
 		prefiltered,

@@ -217,6 +217,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const bool prefiltered,
 	float* out_color,
 	float* depth,
+	float* pixels,
 	bool antialiasing,
 	int* radii,
 	bool debug)
@@ -269,6 +270,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.cov3D,
 		geomState.rgb,
 		geomState.conic_opacity,
+		pixels,
 		tile_grid,
 		geomState.tiles_touched,
 		prefiltered,
@@ -335,7 +337,9 @@ int CudaRasterizer::Rasterizer::forward(
 		background,
 		out_color,
 		geomState.depths,
-		depth), debug)
+		depth,
+		pixels
+		), debug)
 
 	return num_rendered;
 }

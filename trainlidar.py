@@ -16,7 +16,9 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 import numpy as np
 import random
-
+# modified by mwx - 2026-03-09: 引入 SPA 优化器
+from optimizing_spa import OptimizingSpa
+##############################################
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -82,8 +84,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
-
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    # # modified by mwx - 2026-03-09: 初始化优化器
+    # optimizing_spa = None
+    # ##########################################
+    
+    # bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    bg_color = [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     iter_start = torch.cuda.Event(enable_timing = True)
@@ -129,21 +135,43 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(random.randint(0, len(viewpoint_stack) - 1))
-        
-        bg = torch.rand((3), device="cuda") if opt.random_background else background
+
+        bg = background
 
         # 1. 前向渲染
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         rendered_depth = render_pkg["depth"]
+        pixels = render_pkg["pixels"].reshape(-1)
 
+ 
         # 2. RGB Loss
         gt_image = viewpoint_cam.original_image.cuda()
+
         Ll1 = l1_loss(image, gt_image)
         pyramid_weights = [1.0, 1.0, 1.0]
         loss_pyramid_ssim = pyramid_ssim_loss(image, gt_image, levels=3, weight_list=pyramid_weights)
         # loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * loss_pyramid_ssim
+
+        # valid_mask = None
+        # if sky_mask is not None:
+        #     valid_mask = 1.0 - sky_mask
+        # else:
+        #     valid_mask = torch.ones_like(gt_image[:1])
+
+        # diff = torch.abs(image - gt_image) * valid_mask
+        # Ll1 = diff.mean()
+
+        # loss_pyramid_ssim = pyramid_ssim_loss(
+        #     image * valid_mask,
+        #     gt_image * valid_mask,
+        #     levels=3,
+        #     weight_list=[1.0,1.0,1.0]
+        # )
+
+        # loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * loss_pyramid_ssim
+
         # 3. 2D 深度损失 (辅助) - 只使用图像下半部1/3的深度
         loss_depth = torch.tensor(0.0).cuda()
         gt_depth_raw = depth_memory_cache.get(viewpoint_cam.image_name)
@@ -193,8 +221,22 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # 5. 总 Loss 合并
         depths_loss = lambda_depth * loss_depth
-
         total_loss = loss_rgb + depths_loss 
+
+        # # ===== GaussianSpa: 后半程开始 SPA loss ===== modified by mwx - 2026-03-09
+        # if getattr(opt, "optimizing_spa", False) and iteration == opt.optimizing_spa_start_iter:
+        #     optimizing_spa = OptimizingSpa(gaussians, opt, device="cuda")
+
+        # total_loss = loss_rgb + depths_loss
+
+        # if (
+        #     optimizing_spa is not None
+        #     and opt.optimizing_spa_start_iter <= iteration < opt.optimizing_spa_stop_iter
+        # ):
+        #     optimizing_spa.adjust_rho(iteration, opt.iterations)
+        #     total_loss = optimizing_spa.append_spa_loss(total_loss)
+        # ###############################################################################
+
         total_loss.backward()
         if iteration == first_iter:
             g = viewspace_point_tensor.grad
@@ -229,14 +271,33 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 else:
                     gaussians.optimizer.step()
                     gaussians.optimizer.zero_grad(set_to_none = True)
+                # # modified by mwx - 2026-03-09: SPA 优化器步进
+                # # ===== GaussianSpa: 周期性更新 z / u =====
+                # if (
+                #     optimizing_spa is not None
+                #     and opt.optimizing_spa_start_iter <= iteration < opt.optimizing_spa_stop_iter
+                #     and iteration % opt.optimizing_spa_interval == 0
+                # ):
+                #     optimizing_spa.update()
 
+                # # ===== GaussianSpa: 在 stop_iter 做一次硬 prune =====
+                # if optimizing_spa is not None and iteration == opt.optimizing_spa_stop_iter:
+                #     prune_mask = optimizing_spa.build_prune_mask(
+                #         ratio=opt.prune_ratio2,
+                #         min_opacity=None,
+                #         use_z=True
+                #     )
+                #     gaussians.prune_points(prune_mask)
+                #     print(f"[GaussianSpa] hard prune at iter {iteration}, remain points: {gaussians.get_xyz.shape[0]}")
+                # ###################################################
+                
             if (iteration in checkpoint_iterations):
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
             # 稠密化与修建 (3DGS 核心逻辑)
             if iteration < opt.densify_until_iter:
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter, pixels)#pixel修改为之
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None

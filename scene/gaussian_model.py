@@ -497,37 +497,104 @@ class GaussianModel:
 
     # def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
 	## modified by mwx 2026.03.02
+    # def densify_and_prune(self, max_grad, max_grad_abs, min_opacity, extent, max_screen_size, radii):
+	# #############################
+    #     grads = self.xyz_gradient_accum / self.denom
+    #     grads[grads.isnan()] = 0.0
+	# 	## modified by mwx 2026.03.02
+    #     grads_abs = self.xyz_gradient_accum_abs / self.denom
+    #     grads_abs[grads_abs.isnan()] = 0.0
+    #     # grads = self.xyz_gradient_accum / self.denom
+    #     # grads[grads.isnan()] = 0.0
+
+    #     self.tmp_radii = radii
+    #     self.densify_and_clone(grads, max_grad, extent)
+    #     # self.densify_and_split(grads, max_grad, extent)
+    #     self.densify_and_split(grads_abs, max_grad_abs, extent)
+	# 	#############################
+    #     prune_mask = (self.get_opacity < min_opacity).squeeze()
+    #     if max_screen_size:
+    #         big_points_vs = self.max_radii2D > max_screen_size
+    #         big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+    #         prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+    #     self.prune_points(prune_mask)
+    #     tmp_radii = self.tmp_radii
+    #     self.tmp_radii = None
+
+    #     torch.cuda.empty_cache()
+	# 	## modified by mwx 2026.03.02
+    #     assert self.get_xyz.shape[0] == self.xyz_gradient_accum.shape[0] == self.xyz_gradient_accum_abs.shape[0] == self.denom.shape[0] == self.max_radii2D.shape[0]
+		#############################
+    # modified by mwx 2026.03.06
     def densify_and_prune(self, max_grad, max_grad_abs, min_opacity, extent, max_screen_size, radii):
-	#############################
+        eps = 1e-6
+        rho_thresh = 1.8   # 可先从 1.5 开始；更保守就用 2.0
+
         grads = self.xyz_gradient_accum / self.denom
-        grads[grads.isnan()] = 0.0
-		## modified by mwx 2026.03.02
         grads_abs = self.xyz_gradient_accum_abs / self.denom
-        grads_abs[grads_abs.isnan()] = 0.0
-        # grads = self.xyz_gradient_accum / self.denom
-        # grads[grads.isnan()] = 0.0
+
+        grads = torch.nan_to_num(grads, nan=0.0, posinf=0.0, neginf=0.0)
+        grads_abs = torch.nan_to_num(grads_abs, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 冲突度：abs 大但 normal 小，说明更像“内部梯度抵消”，更适合 split
+        rho = grads_abs / (grads.abs() + eps)
+
+        # 显式拿一下尺度，虽然 clone/split 里本来也有尺度门控
+        scales = self.get_scaling.max(dim=1).values
+        small_mask = scales <= self.percent_dense * extent
+        large_mask = scales > self.percent_dense * extent
+
+        # clone：只保留 小尺度 + 冲突不高 的点
+        clone_scores = grads.clone()
+        clone_scores[~small_mask] = 0.0
+        clone_scores[rho > rho_thresh] = 0.0
+
+        # split：只保留 大尺度 + 冲突较高 的点
+        split_scores = grads_abs.clone()
+        split_scores[~large_mask] = 0.0
+        split_scores[rho <= rho_thresh] = 0.0
 
         self.tmp_radii = radii
-        self.densify_and_clone(grads, max_grad, extent)
-        # self.densify_and_split(grads, max_grad, extent)
-        self.densify_and_split(grads_abs, max_grad_abs, extent)
-		#############################
+        self.densify_and_clone(clone_scores, max_grad, extent)
+        self.densify_and_split(split_scores, max_grad_abs, extent)
+
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+
         self.prune_points(prune_mask)
-        tmp_radii = self.tmp_radii
         self.tmp_radii = None
 
         torch.cuda.empty_cache()
-		## modified by mwx 2026.03.02
         assert self.get_xyz.shape[0] == self.xyz_gradient_accum.shape[0] == self.xyz_gradient_accum_abs.shape[0] == self.denom.shape[0] == self.max_radii2D.shape[0]
-		#############################
-    def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
-        ## modified by mwx 2026.03.02
-        self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, 2:], dim=-1, keepdim=True)
+
+    def add_densification_stats(self, viewspace_point_tensor, update_filter, pixels):
+        # modified by mwx 2026.03.06
+        # pixels: (N,) or (N,1)
+        if pixels.dim() == 1:
+            pixels = pixels.unsqueeze(-1)
+
+        # 可选：如果训练分辨率不固定，建议归一化
+        # pixels = pixels / float(image_h * image_w)
+
+        grad_xy = torch.norm(
+            viewspace_point_tensor.grad[update_filter, :2],
+            dim=-1, keepdim=True
+        )
+
+        # 这里沿用当前 AbsGS 的“额外梯度通道”逻辑
+        grad_abs = torch.norm(
+            viewspace_point_tensor.grad[update_filter, 2:],
+            dim=-1, keepdim=True
+        )
+        self.xyz_gradient_accum[update_filter] += grad_xy * pixels[update_filter]
+        self.xyz_gradient_accum_abs[update_filter] += grad_abs * pixels[update_filter]
+        self.denom[update_filter] += pixels[update_filter]
         #############################
-		self.denom[update_filter] += 1
+        # self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
+        # ## modified by mwx 2026.03.02
+        # self.xyz_gradient_accum_abs[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter, 2:], dim=-1, keepdim=True)
+        # #############################
+        # self.denom[update_filter] += 1

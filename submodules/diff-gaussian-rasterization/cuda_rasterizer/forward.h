@@ -43,6 +43,9 @@ namespace FORWARD
 		float* cov3Ds,
 		float* colors,
 		float4* conic_opacity,
+		// modified by mwx 2026-03-06
+		float* pixels,
+		/////////////////////////////
 		const dim3 grid,
 		uint32_t* tiles_touched,
 		bool prefiltered,
@@ -62,7 +65,11 @@ namespace FORWARD
 		const float* bg_color,
 		float* out_color,
 		float* depths,
-		float* depth);
+		float* depth,
+		// modified by mwx 2026-03-06
+		float* pixels
+		/////////////////////////////
+		);
 }
 
 
