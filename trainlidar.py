@@ -84,9 +84,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
-    # # modified by mwx - 2026-03-09: 初始化优化器
-    # optimizing_spa = None
-    # ##########################################
+    # modified by mwx - 2026-03-09: 初始化优化器
+    optimizing_spa = None
+    ##########################################
     
     # bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     bg_color = [0, 0, 0]
@@ -221,21 +221,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # 5. 总 Loss 合并
         depths_loss = lambda_depth * loss_depth
-        total_loss = loss_rgb + depths_loss 
+        # total_loss = loss_rgb + depths_loss 
 
-        # # ===== GaussianSpa: 后半程开始 SPA loss ===== modified by mwx - 2026-03-09
-        # if getattr(opt, "optimizing_spa", False) and iteration == opt.optimizing_spa_start_iter:
-        #     optimizing_spa = OptimizingSpa(gaussians, opt, device="cuda")
+        # ===== GaussianSpa: 后半程开始 SPA loss ===== modified by mwx - 2026-03-09
+        if getattr(opt, "optimizing_spa", False) and iteration == opt.optimizing_spa_start_iter:
+            optimizing_spa = OptimizingSpa(gaussians, opt, device="cuda")
 
-        # total_loss = loss_rgb + depths_loss
+        total_loss = loss_rgb + depths_loss
 
-        # if (
-        #     optimizing_spa is not None
-        #     and opt.optimizing_spa_start_iter <= iteration < opt.optimizing_spa_stop_iter
-        # ):
-        #     optimizing_spa.adjust_rho(iteration, opt.iterations)
-        #     total_loss = optimizing_spa.append_spa_loss(total_loss)
-        # ###############################################################################
+        if (
+            optimizing_spa is not None
+            and opt.optimizing_spa_start_iter <= iteration < opt.optimizing_spa_stop_iter
+        ):
+            optimizing_spa.adjust_rho(iteration, opt.iterations)
+            total_loss = optimizing_spa.append_spa_loss(total_loss)
+        ###############################################################################
 
         total_loss.backward()
         if iteration == first_iter:
@@ -271,25 +271,25 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 else:
                     gaussians.optimizer.step()
                     gaussians.optimizer.zero_grad(set_to_none = True)
-                # # modified by mwx - 2026-03-09: SPA 优化器步进
-                # # ===== GaussianSpa: 周期性更新 z / u =====
-                # if (
-                #     optimizing_spa is not None
-                #     and opt.optimizing_spa_start_iter <= iteration < opt.optimizing_spa_stop_iter
-                #     and iteration % opt.optimizing_spa_interval == 0
-                # ):
-                #     optimizing_spa.update()
+                # modified by mwx - 2026-03-09: SPA 优化器步进
+                # ===== GaussianSpa: 周期性更新 z / u =====
+                if (
+                    optimizing_spa is not None
+                    and opt.optimizing_spa_start_iter <= iteration < opt.optimizing_spa_stop_iter
+                    and iteration % opt.optimizing_spa_interval == 0
+                ):
+                    optimizing_spa.update()
 
-                # # ===== GaussianSpa: 在 stop_iter 做一次硬 prune =====
-                # if optimizing_spa is not None and iteration == opt.optimizing_spa_stop_iter:
-                #     prune_mask = optimizing_spa.build_prune_mask(
-                #         ratio=opt.prune_ratio2,
-                #         min_opacity=None,
-                #         use_z=True
-                #     )
-                #     gaussians.prune_points(prune_mask)
-                #     print(f"[GaussianSpa] hard prune at iter {iteration}, remain points: {gaussians.get_xyz.shape[0]}")
-                # ###################################################
+                # ===== GaussianSpa: 在 stop_iter 做一次硬 prune =====
+                if optimizing_spa is not None and iteration == opt.optimizing_spa_stop_iter:
+                    prune_mask = optimizing_spa.build_prune_mask(
+                        ratio=opt.prune_ratio2,
+                        min_opacity=None,
+                        use_z=True
+                    )
+                    gaussians.prune_points(prune_mask)
+                    print(f"[GaussianSpa] hard prune at iter {iteration}, remain points: {gaussians.get_xyz.shape[0]}")
+                ###################################################
                 
             if (iteration in checkpoint_iterations):
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")

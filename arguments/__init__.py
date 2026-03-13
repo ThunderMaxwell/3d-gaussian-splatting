@@ -99,13 +99,13 @@ class OptimizationParams(ParamGroup):
         self.random_background = False
         self.optimizer_type = "default"
         self.optimizing_spa = True
-        # # modified by mwx 2026.03.09
-        # self.optimizing_spa_start_iter = self.densify_until_iter + 200
-        # self.optimizing_spa_stop_iter = min(self.iterations - 1000, self.densify_until_iter + 10000)
-        # self.optimizing_spa_interval = 50
-        # self.rho_lr = 5e-4
-        # self.prune_ratio2 = 0.5
-        # #############################
+        # modified by mwx 2026.03.09
+        self.optimizing_spa_start_iter = self.densify_until_iter + 200
+        self.optimizing_spa_stop_iter = min(self.iterations - 1000, self.densify_until_iter + 10000)
+        self.optimizing_spa_interval = 50
+        self.rho_lr = 5e-4
+        self.prune_ratio2 = 0.5
+        #############################
         super().__init__(parser, "Optimization Parameters")
 
 class QuickParams(ParamGroup):
