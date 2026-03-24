@@ -112,6 +112,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter += 1
 
     for iteration in range(first_iter, opt.iterations + 1):
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         if network_gui.conn == None:
             network_gui.try_connect()
         while network_gui.conn != None:
@@ -340,8 +342,11 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss_fn, depths_loss,  e
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/depth_loss', depths_loss.item() if isinstance(depths_loss, torch.Tensor) else depths_loss, iteration)
-
         tb_writer.add_scalar('iter_time', elapsed, iteration)
+        if torch.cuda.is_available():
+            device = torch.cuda.current_device()
+            bytes_to_mb = 1024.0 ** 2
+            tb_writer.add_scalar('gpu_memory/max_allocated_mb', torch.cuda.max_memory_allocated(device) / bytes_to_mb, iteration)
         
         for i, group in enumerate(scene.gaussians.optimizer.param_groups):
             tb_writer.add_scalar(f'learning_rate/{group["name"]}', group['lr'], iteration)
