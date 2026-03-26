@@ -88,6 +88,9 @@ class OptimizationParams(ParamGroup):
         self.exposure_lr_delay_mult = 0.0
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
+        # modified by mwx 2026.03.26
+        self.pyramid = False   # 默认不用金字塔SSIM，命令行加 --pyramid 时启用
+        ############################
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500

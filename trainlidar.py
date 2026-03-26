@@ -4,7 +4,7 @@ import os
 import torch
 from random import randint
 # [Modified] 引入必要的损失函数
-from utils.loss_utils import  depth_loss_l1, pyramid_ssim_loss,l1_loss
+from utils.loss_utils import  depth_loss_l1, pyramid_ssim_loss,l1_loss,ssim
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -36,6 +36,8 @@ try:
     SPARSE_ADAM_AVAILABLE = True
 except:
     SPARSE_ADAM_AVAILABLE = False
+
+
 
 def preload_all_depths(scene, depth_root):
     depth_dict = {}
@@ -111,6 +113,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
 
+    if opt.pyramid:
+        print("[INFO] 已启用 pyramid SSIM loss")
+    else:
+        print("[INFO] 未启用 pyramid，当前使用普通 SSIM loss")
+        
     for iteration in range(first_iter, opt.iterations + 1):
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
@@ -151,28 +158,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = viewpoint_cam.original_image.cuda()
 
         Ll1 = l1_loss(image, gt_image)
-        pyramid_weights = [1.0, 1.0, 1.0]
-        loss_pyramid_ssim = pyramid_ssim_loss(image, gt_image, levels=3, weight_list=pyramid_weights)
-        # loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * loss_pyramid_ssim
+        # modified by mwx - 2026-03-26
+        # pyramid ssim loss - 2026-03-26: 可选的金字塔 SSIM 损失
+        if opt.pyramid:
+            pyramid_weights = [1.0, 1.0, 1.0]
+            ssim_term = pyramid_ssim_loss(
+                image,
+                gt_image,
+                levels=3,
+                weight_list=pyramid_weights
+            )
+        else:
+            ssim_term = 1.0 - ssim(image, gt_image)
 
-        # valid_mask = None
-        # if sky_mask is not None:
-        #     valid_mask = 1.0 - sky_mask
-        # else:
-        #     valid_mask = torch.ones_like(gt_image[:1])
-
-        # diff = torch.abs(image - gt_image) * valid_mask
-        # Ll1 = diff.mean()
-
-        # loss_pyramid_ssim = pyramid_ssim_loss(
-        #     image * valid_mask,
-        #     gt_image * valid_mask,
-        #     levels=3,
-        #     weight_list=[1.0,1.0,1.0]
-        # )
-
-        # loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * loss_pyramid_ssim
+        loss_rgb = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * ssim_term
+        #########################################################
 
         # 3. 2D 深度损失 (辅助) - 只使用图像下半部1/3的深度
         loss_depth = torch.tensor(0.0).cuda()
